@@ -1877,13 +1877,34 @@ class Redistribute(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: "dtensor.DTensor"):  # type: ignore[override]
         previous_spec = ctx.current_spec
-        output_dtensor = NestedRedistribute.apply(
-            grad_output,
-            previous_spec,
-            ctx.async_op,
-            ctx.backward_dtype,
-            ctx.original_dtype,
-        )
+
+        if _are_we_tracing():
+            # Under make_fx or dynamo tracing, skip NestedRedistribute to avoid
+            # introducing a nested autograd.Function that changes the traced graph.
+            backward_dtype = ctx.backward_dtype or ctx.original_dtype
+            output, spec = _redistribute_backward(
+                grad_output,
+                previous_spec,
+                ctx.original_dtype,
+                backward_dtype,
+                ctx.async_op,
+            )
+            # pyrefly: ignore [bad-argument-type]
+            output_dtensor = dtensor.DTensor(
+                # pyrefly: ignore [bad-argument-count]
+                output,
+                spec,
+                # pyrefly: ignore [unexpected-keyword]
+                requires_grad=grad_output.requires_grad,
+            )
+        else:
+            output_dtensor = NestedRedistribute.apply(
+                grad_output,
+                previous_spec,
+                ctx.async_op,
+                ctx.backward_dtype,
+                ctx.original_dtype,
+            )
         return (
             output_dtensor,
             None,
