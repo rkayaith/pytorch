@@ -1795,6 +1795,19 @@ def xfailIfROCm(func):
     return unittest.expectedFailure(func) if torch.version.hip is not None else func
 
 
+def assertRaisesRegexIf(condition, exc_type, regex):
+    """Decorator: if condition is True, expect the test to raise exc_type matching regex."""
+    def decorator(fn):
+        if not condition:
+            return fn
+        @wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            with self.assertRaisesRegex(exc_type, regex):
+                fn(self, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
 def skipIfFreeThreaded(msg="Test doesn't work with free-threaded python"):
     if not isinstance(msg, str):
         raise AssertionError("Are you using skipIfFreeThreaded correctly?")

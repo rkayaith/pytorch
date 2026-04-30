@@ -23,6 +23,7 @@ from torch.testing._internal.common_nn import NNTestCase
 from torch.testing._internal.common_utils import (
     isRocmArchAnyOf,
     TEST_WITH_ROCM,
+    assertRaisesRegexIf,
     skipIfRocm,
     skipIfRocmArch,
     MI300_ARCH,
@@ -353,6 +354,7 @@ class TestTransformers(NNTestCase):
     @parametrize("attn_mask_dim", [2, 3, None])
     @parametrize("key_padding_mask_dim", [2, None])
     @parametrize("mask_dtype", [torch.bool, torch.float32])
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "Compilation pipeline failed")
     def test_multiheadattention_fastpath_attn_mask(self, device, attn_mask_dim, key_padding_mask_dim, mask_dtype):
         # MHA converts all
         with torch.no_grad():
@@ -385,6 +387,7 @@ class TestTransformers(NNTestCase):
             self.assertEqual(out, out_fp.nan_to_num())
 
     @onlyCUDA
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "Compilation pipeline failed")
     def test_multiheadattention_fastpath_fp16_head_dim_alignment(self, device):
         previous_fastpath = torch.backends.mha.get_fastpath_enabled()
         try:
@@ -565,6 +568,10 @@ class TestTransformers(NNTestCase):
         Test for edge cases when input of shape (batch size, sequence length, embedding dimension) has
         batch size == sequence length
         """
+        _expect_compile_failure = TEST_WITH_ROCM and with_no_grad and training
+        _xfail_cm = (self.assertRaisesRegex(RuntimeError, "Compilation pipeline failed")
+                     if _expect_compile_failure else contextlib.nullcontext())
+
         model = torch.nn.TransformerEncoder(
             torch.nn.TransformerEncoderLayer(d_model=4, nhead=2, dim_feedforward=16, dropout=0.0, batch_first=True),
             num_layers=2,
@@ -591,8 +598,10 @@ class TestTransformers(NNTestCase):
             cm = torch.no_grad()
         else:
             cm = contextlib.nullcontext()
-        with cm:
+        with cm, _xfail_cm:
             result = model(x, mask=src_mask)
+        if _expect_compile_failure:
+            return
 
         ref_output = torch.Tensor([[[2.420306205749512, 0.017629241570830, -0.607857942581177, -0.085519507527351],
                                     [2.420306205749512, 0.017629241570830, -0.607857942581177, -0.085519507527351]],
@@ -606,6 +615,10 @@ class TestTransformers(NNTestCase):
     @parametrize("training", [True, False])
     @parametrize("enable_nested_tensor", [True, False])
     def test_transformerencoder(self, batch_first, training, enable_nested_tensor, device):
+        _expect_compile_failure = TEST_WITH_ROCM and not batch_first and not training
+        _xfail_cm = (self.assertRaisesRegex(RuntimeError, "Compilation pipeline failed")
+                     if _expect_compile_failure else contextlib.nullcontext())
+
         def get_a_test_layer(activation, batch_first=False):
             d_model = 4
             nhead = 2
@@ -793,7 +806,7 @@ class TestTransformers(NNTestCase):
                 cm = contextlib.nullcontext()
             else:
                 cm = torch.no_grad()  # transformer fast path requires no grad
-            with cm:
+            with cm, _xfail_cm:
                 _test(batch_first, training, enable_nested_tensor)
 
     @unittest.skipIf(sys.version_info < (3, 11), "not supported on pre-3.11 Python")
@@ -1473,6 +1486,7 @@ class TestTransformers(NNTestCase):
         torch.jit.script(mha)
 
     @unittest.skipIf(TEST_WITH_CROSSREF, 'Fastpath not available with crossref')
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "Compilation pipeline failed")
     @torch.no_grad()
     def test_disable_fastpath(self, device):
         def _test_te_fastpath_called(model, args, kwargs=None, return_value=None, is_called=True):
@@ -2196,6 +2210,7 @@ class TestSDPA(NNTestCase):
             sdp_math = torch.nn.functional.scaled_dot_product_attention(x, x, x, scale=-1.0 / 0.0001)
         self.assertEqual(ref_result, sdp_math)
 
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "Compilation pipeline failed")
     def test_scaled_dot_product_attention_fp16_overflow(self, device):
         # Regression test for https://github.com/pytorch/pytorch/issues/160841
         x = torch.full((1, 32, 23, 80), 256.0, dtype=torch.half, device=device)
@@ -2783,6 +2798,7 @@ class TestSDPACudaOnly(NNTestCase):
         S_converted = F.pad(S_converted, (0, seqlen_k_og - seqlen_k_rounded))
         return S_converted[:, :, :seqlen_q, :seqlen_k]
 
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "No available kernel")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cuDNN Attention is not supported on this system")
     def test_cudnn_attention_different_dk_dv(self, device):
         dtype = torch.bfloat16
@@ -2940,6 +2956,7 @@ class TestSDPACudaOnly(NNTestCase):
                 with self.assertRaisesRegex(RuntimeError, "No available kernel."):
                     torch.nn.functional.scaled_dot_product_attention(q, k, v)
 
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "No available kernel")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     def test_cudnn_attention_trivial_output_transpose(self, device):
         # see also: https://github.com/pytorch/pytorch/issues/134001
@@ -2955,6 +2972,7 @@ class TestSDPACudaOnly(NNTestCase):
         o.backward(o)
         torch.testing.assert_close(x.grad, x_cpu.grad.cuda(), atol=7e-3, rtol=7e-3)
 
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "No available kernel")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     def test_cudnn_attention_nonmodulo64seqlen(self, device):
         # see also: https://github.com/pytorch/pytorch/issues/137347
@@ -2994,6 +3012,7 @@ class TestSDPACudaOnly(NNTestCase):
         torch.testing.assert_close(k.grad, k_cpu.grad.cuda(), atol=3e-3, rtol=2e-3)
         torch.testing.assert_close(v.grad, v_cpu.grad.cuda(), atol=3e-3, rtol=2e-3)
 
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "No available kernel")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     def test_cudnn_attention_preserves_query_layout(self, device):
 
@@ -3060,6 +3079,7 @@ class TestSDPACudaOnly(NNTestCase):
             atol, rtol = 2e-2, 2e-2
         torch.testing.assert_close(out, out_ref, atol=atol, rtol=rtol)
 
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "No available kernel")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     @unittest.skipIf(
         not (isSM90Device and torch.backends.cudnn.version() >= 91000),
@@ -3096,6 +3116,7 @@ class TestSDPACudaOnly(NNTestCase):
         out = fn(q, k, v)
         self.assertEqual(out.shape, (B, H, S, D_v))
 
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "No available kernel")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     def test_cudnn_attention_compiles(self):
         q = torch.randn(2, 8, 1024, 128, dtype=torch.half, device='cuda', requires_grad=True)
@@ -3137,7 +3158,7 @@ class TestSDPACudaOnly(NNTestCase):
         with self.assertRaisesRegex(AssertionError, "AssertionError not raised"):
             self.assertNotEqual(out1, out2)
 
-    @skipIfRocm
+    @assertRaisesRegexIf(TEST_WITH_ROCM, RuntimeError, "No available kernel")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     def test_cudnn_attention_broken_166211(self):
         # https://github.com/pytorch/pytorch/issues/166211#issue-3551350377
@@ -3198,7 +3219,7 @@ class TestSDPACudaOnly(NNTestCase):
 
         self.assertEqual(out_math, out_cudnn, atol=5e-3, rtol=3e-3)
 
-    @skipIfRocm
+    @assertRaisesRegexIf(TEST_WITH_ROCM, AssertionError, "Tensor-likes are not close")
     @unittest.skipIf(not PLATFORM_SUPPORTS_CUDNN_ATTENTION, "cudnn Attention is not supported on this system")
     def test_cudnn_attention_mask_broken_177842(self):
         # https://github.com/pytorch/pytorch/issues/177842
@@ -4315,6 +4336,13 @@ class TestSDPACudaOnly(NNTestCase):
             if "return_debug_mask" in kwargs:
                 kwargs.pop("return_debug_mask")
         with torch.cuda.stream(s):
+            # hipDNN doesn't support this configuration yet.
+            if TEST_WITH_ROCM and fused_kernel == SDPBackend.CUDNN_ATTENTION:
+                with self.assertRaisesRegex(
+                    RuntimeError, "hipDNN Frontend error: No engine configurations available"
+                ):
+                    fused_op(query, key, value, **kwargs)
+                return
             # Create real output
             output_tuple = fused_op(query, key, value, **kwargs)
 
